@@ -26,7 +26,33 @@ jobs:
         with:
           node-version: 20
 
+      - name: Extract project ZIP and locate package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "skycast-weather.zip" ]; then
+            echo "ERROR: skycast-weather.zip was not found in the repository root."
+            exit 1
+          fi
+
+          mkdir -p extracted-project
+          unzip -oq skycast-weather.zip -d extracted-project
+
+          PACKAGE_FILE="$(find extracted-project -type f -name package.json \
+            -not -path '*/node_modules/*' | sort | head -n 1)"
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "ERROR: package.json was not found inside skycast-weather.zip."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PACKAGE_FILE")"
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
+
       - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -35,6 +61,7 @@ jobs:
           fi
 
       - name: Build
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm run build
 
       - name: Configure Pages
@@ -43,7 +70,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: ${{ env.PROJECT_DIR }}/dist
 
   deploy:
     needs: build
