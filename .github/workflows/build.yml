@@ -12,6 +12,7 @@ jobs:
   apk:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +28,34 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Extract project ZIP and locate package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "skycast-weather.zip" ]; then
+            echo "ERROR: skycast-weather.zip was not found in the repository root."
+            exit 1
+          fi
+
+          mkdir -p extracted-project
+          unzip -oq skycast-weather.zip -d extracted-project
+
+          PACKAGE_FILE="$(find extracted-project -type f -name package.json \
+            -not -path '*/node_modules/*' | sort | head -n 1)"
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "ERROR: package.json was not found inside skycast-weather.zip."
+            echo "The ZIP must contain the actual web app project."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PACKAGE_FILE")"
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
+
       - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -36,36 +64,58 @@ jobs:
           fi
 
       - name: Build web app
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm run build
 
-      - name: Add Android platform (first run only)
+      - name: Add Android platform (if missing)
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           if [ ! -d android ]; then
             npx cap add android
           fi
 
       - name: Sync web assets into Android project
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npx cap sync android
 
-      - name: Configure per-CPU APKs and permissions
-        run: node scripts/patch-android.mjs
-
-      - name: Build APKs (armeabi-v7a, arm64-v8a, x86, x86_64, universal)
-        working-directory: android
+      - name: Configure Android APKs and permissions (if script exists)
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          chmod +x gradlew
+          if [ -f scripts/patch-android.mjs ]; then
+            node scripts/patch-android.mjs
+          else
+            echo "scripts/patch-android.mjs not found; skipping optional patch."
+          fi
+
+      - name: Build Android debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x android/gradlew
+          cd android
           ./gradlew assembleDebug --no-daemon
 
       - name: Collect APKs
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          mkdir -p out
-          for f in android/app/build/outputs/apk/debug/*.apk; do
-            n=$(basename "$f" .apk)
-            n=${n#app-}
-            n=${n%-debug}
-            cp "$f" "out/SkyCast-${n}.apk"
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          shopt -s nullglob
+          files=(android/app/build/outputs/apk/debug/*.apk)
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "ERROR: No APK files were generated."
+            exit 1
+          fi
+
+          for f in "${files[@]}"; do
+            n="$(basename "$f" .apk)"
+            n="${n#app-}"
+            n="${n%-debug}"
+            cp "$f" "$GITHUB_WORKSPACE/out/SkyCast-${n}.apk"
           done
-          ls -lh out
+
+          ls -lh "$GITHUB_WORKSPACE/out"
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
